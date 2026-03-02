@@ -6,6 +6,12 @@ AI-powered voice agent that answers inbound calls, holds natural conversations u
 
 ## Current Stack (Proof of Concept)
 
+<img width="1131" height="1111" alt="image" src="https://github.com/user-attachments/assets/2c03bd85-b7c9-4dd3-8004-620d2e5e8c7b" />
+
+<img width="1715" height="1260" alt="Screenshot 2026-03-02 170943" src="https://github.com/user-attachments/assets/a8e04971-268e-4f22-9edb-3b5fd7f3c86d" />
+
+
+
 | Layer | Technology | Role |
 |-------|-----------|------|
 | **Framework** | Next.js 14 (App Router) | Pages, API routes, SSR |
