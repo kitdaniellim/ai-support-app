@@ -1,0 +1,165 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL_UNPOOLED")
+}
+
+model Business {
+  id             String          @id @default(cuid())
+  name           String
+  phoneNumber    String          @unique
+  whatsappNumber String?
+  isActive       Boolean         @default(true)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  users          BusinessUser[]
+  calls          Call[]
+  contextProfile ContextProfile?
+
+  @@index([phoneNumber])
+  @@map("businesses")
+}
+
+model ContextProfile {
+  id                 String   @id @default(cuid())
+  businessId         String   @unique
+  companyDescription String
+  servicesOffered    Json
+  faqItems           Json
+  toneOfVoice        ToneType @default(PROFESSIONAL)
+  customTone         String?
+  greetingScript     String?
+  voiceName          String?  @default("onyx")
+  language           String?  @default("en-US")
+  customInstructions String?
+  leadCriteria       Json
+  escalationRules    Json?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  business           Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@map("context_profiles")
+}
+
+model Call {
+  id            String       @id @default(cuid())
+  businessId    String
+  twilioCallSid String       @unique
+  callerNumber  String
+  callerName    String?
+  status        CallStatus   @default(INITIATED)
+  direction     Direction    @default(INBOUND)
+  startedAt     DateTime     @default(now())
+  answeredAt    DateTime?
+  endedAt       DateTime?
+  duration      Int?
+  recordingUrl  String?
+  leadScore     Int?
+  leadQualified Boolean?
+  sentiment     String?
+  summary       String?
+  nextAction    String?
+  actionItems   ActionItem[]
+  business      Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  messages      Message[]
+
+  @@index([businessId, status])
+  @@index([twilioCallSid])
+  @@map("calls")
+}
+
+model Message {
+  id        String      @id @default(cuid())
+  callId    String
+  role      MessageRole
+  content   String
+  timestamp DateTime    @default(now())
+  amplitude Float?
+  duration  Int?
+  isPartial Boolean     @default(false)
+  call      Call        @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  @@index([callId, timestamp])
+  @@map("messages")
+}
+
+model ActionItem {
+  id         String         @id @default(cuid())
+  callId     String
+  suggestion String
+  priority   ActionPriority @default(MEDIUM)
+  category   String?
+  createdAt  DateTime       @default(now())
+  dismissed  Boolean        @default(false)
+  acted      Boolean        @default(false)
+  call       Call           @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  @@index([callId, dismissed])
+  @@map("action_items")
+}
+
+model BusinessUser {
+  id         String    @id @default(cuid())
+  businessId String
+  email      String    @unique
+  name       String
+  role       UserRole  @default(MEMBER)
+  avatarUrl  String?
+  isActive   Boolean   @default(true)
+  lastSeenAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  business   Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@map("business_users")
+}
+
+enum ToneType {
+  PROFESSIONAL
+  FRIENDLY
+  FORMAL
+  CASUAL
+  EMPATHETIC
+}
+
+enum CallStatus {
+  INITIATED
+  RINGING
+  IN_PROGRESS
+  ON_HOLD
+  VOICEMAIL_DETECTED
+  TRANSFERRED
+  COMPLETED
+  FAILED
+  NO_ANSWER
+  BUSY
+}
+
+enum Direction {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum ActionPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum UserRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
