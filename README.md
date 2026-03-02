@@ -1,366 +1,256 @@
-# VoiceIQ — AI Voice Agent Platform
+# VoiceIQ
 
-> Multi-tenant AI-powered voice agent that qualifies leads and handles customer calls — powered by Claude AI, Twilio, and Next.js.
-
-Callers dial a business phone number → Twilio receives the call → Your app answers with an AI agent that knows the business inside out → The dashboard shows live transcripts, waveform, and AI coaching suggestions in real-time.
+AI-powered voice agent that answers inbound calls, holds natural conversations using neural TTS, qualifies leads, and streams live transcripts to a real-time dashboard — all configured per-business through a self-service onboarding wizard.
 
 ---
 
-## How It Works
-
-```
-┌──────────────┐     ┌──────────────────┐     ┌────────────────────────────┐
-│  Caller      │     │  Twilio Cloud    │     │  Your App (localhost:3000) │
-│  dials       │────►│  receives call   │────►│  webhook: /api/webhooks/   │
-│  +1 XXX...   │     │  sends webhook   │     │  twilio                    │
-└──────────────┘     └──────────────────┘     └─────────────┬──────────────┘
-                                                            │
-                     ┌──────────────────────────────────────┘
-                     │
-                     ▼
-        ┌────────────────────────┐
-        │  1. Look up Business   │
-        │  2. Create Call record │
-        │  3. Create Session     │
-        │  4. Return TwiML:      │
-        │     <Gather speech>    │
-        │       <Say>greeting    │
-        │     </Gather>          │
-        └───────────┬────────────┘
-                    │
-                    ▼
-        ┌────────────────────────────────────────────────┐
-        │  CONVERSATION LOOP (repeats each turn)         │
-        │                                                │
-        │  Caller speaks                                 │
-        │       │                                        │
-        │       ▼                                        │
-        │  Twilio STT (built-in speech recognition)      │
-        │       │                                        │
-        │       ▼                                        │
-        │  POST /api/webhooks/twilio/gather              │
-        │       │  { SpeechResult: "caller's words" }    │
-        │       │                                        │
-        │       ▼                                        │
-        │  Claude AI (Opus 4.6) generates response       │
-        │       │  - reads full conversation history     │
-        │       │  - knows company, services, FAQs       │
-        │       │  - qualifies leads, follows tone       │
-        │       │                                        │
-        │       ▼                                        │
-        │  Return TwiML:                                 │
-        │    <Gather speech>                             │
-        │      <Say>AI response</Say>  ←── caller hears │
-        │    </Gather>                                   │
-        │       │                                        │
-        │       └──── loops back to "Caller speaks" ─────┘
-        └────────────────────────────────────────────────┘
-                    │
-                    │  (meanwhile, in real-time)
-                    ▼
-        ┌────────────────────────────────────────────────┐
-        │  LIVE DASHBOARD (Socket.IO)                    │
-        │                                                │
-        │  • Transcript bubbles appear as turns happen   │
-        │  • AI coaching suggestions fly in              │
-        │  • Waveform animates to call amplitude         │
-        │  • Action items (lead signals, objections)     │
-        └────────────────────────────────────────────────┘
-                    │
-                    │  (when caller hangs up)
-                    ▼
-        ┌────────────────────────────────────────────────┐
-        │  POST-CALL ANALYSIS (Claude Haiku)             │
-        │                                                │
-        │  • Summary of the conversation                 │
-        │  • Sentiment analysis                          │
-        │  • Lead score (0-100)                          │
-        │  • Lead qualified? (yes/no)                    │
-        │  • Recommended next action                     │
-        └────────────────────────────────────────────────┘
-```
-
----
-
-## Tech Stack
+## Current Stack (Proof of Concept)
 
 | Layer | Technology | Role |
 |-------|-----------|------|
-| Framework | Next.js 14 (App Router) | Pages, API routes, SSR |
-| AI (conversation) | Claude Opus 4.6 | Responds to callers (max 300 tokens for voice brevity) |
-| AI (analysis) | Claude Haiku 4.5 | Action items, post-call summaries (fast, <500ms) |
-| Telephony | Twilio Voice | Phone numbers, call routing, built-in STT + TTS |
-| Real-time | Socket.IO | Live dashboard updates over WebSocket |
-| Database | PostgreSQL (Neon) + Prisma ORM | Call records, transcripts, businesses |
-| Animations | GSAP 3 | Waveform, transcript bubbles, action item cards |
-| Styling | Tailwind CSS | Dark theme, responsive layout |
-| Language | TypeScript | End-to-end type safety |
+| **Framework** | Next.js 14 (App Router) | Pages, API routes, SSR |
+| **AI (conversation)** | Claude Sonnet 4.6 | Responds to callers (max 150 tokens for voice brevity) |
+| **AI (analysis)** | Claude Haiku 4.5 | Action items, post-call summaries (fast, cheap) |
+| **Telephony** | Twilio Programmable Voice | Phone numbers, call routing, built-in STT via `<Gather speech>` |
+| **TTS** | Sesame CSM 1B (local GPU) | Neural voice synthesis on RTX 3080, Docker on port 8999 |
+| **Real-time** | Socket.IO | Live dashboard updates over WebSocket |
+| **Database** | PostgreSQL (Neon serverless) + Prisma 5 | Call records, transcripts, businesses |
+| **Animations** | GSAP 3 | Waveform, transcript bubbles |
+| **Styling** | Tailwind CSS | Dark theme, responsive layout |
+| **Tunnel** | ngrok | Exposes localhost to Twilio webhooks |
 
 ---
 
-## Quick Start
+## How It Works (POC Flow)
 
-### 1. Install
-
-```bash
-git clone <repo>
-cd ai-support-app
-npm install
+```
+Caller dials Twilio number
+        |
+        v
++------------------------------------------+
+|  POST /api/webhooks/twilio               |
+|                                          |
+|  1. Lookup business by called number     |
+|  2. AMD check (human callers only)       |
+|  3. Create Call record + Session         |
+|  4. Seed greeting into Claude history    |
+|  5. Check Sesame greeting cache:         |
+|     HIT  -> <Gather><Play>cached</Gather>|
+|     MISS -> Start generation, redirect   |
+|             to /speak for fresh clock    |
++-------------------+----------------------+
+                    |
+                    | Caller speaks
+                    v
++------------------------------------------+
+|  POST /api/webhooks/twilio/gather        |
+|                                          |
+|  1. Extract SpeechResult (Twilio STT)    |
+|  2. Claude Sonnet generates response     |
+|     - Full conversation history          |
+|     - Business context, FAQs, tone       |
+|     - Max 150 tokens (1-2 sentences)     |
+|  3. Chunk response into sentences        |
+|     (~40 chars/chunk for ~2.5s audio)    |
+|  4. Start Sesame TTS for chunk 1         |
+|  5. Persist messages to DB               |
+|  6. Fire-and-forget: action item         |
+|     analysis via Claude Haiku            |
+|  7. Redirect to /speak                   |
++-------------------+----------------------+
+                    |
+                    v
++------------------------------------------+
+|  POST /api/webhooks/twilio/speak         |
+|  (TTS playback with polling)             |
+|                                          |
+|  1. Await Sesame promise (12s timeout)   |
+|  2. Audio ready?                         |
+|     YES + more chunks:                   |
+|       <Play>chunk.wav</Play>             |
+|       Start next chunk (with context)    |
+|       <Redirect> back to /speak          |
+|     YES + last chunk:                    |
+|       <Gather><Play>final.wav</Gather>   |
+|       (caller can respond)               |
+|     TIMEOUT:                             |
+|       <Pause 2s><Redirect> retry         |
+|       (up to 4 retries)                  |
++-------------------+----------------------+
+                    |
+                    | Caller speaks again
+                    v
+              (loop back to /gather)
+                    |
+                    | Caller hangs up
+                    v
++------------------------------------------+
+|  Status callback (PUT)                   |
+|                                          |
+|  1. Claude Haiku summarizes call         |
+|     - Summary, sentiment, lead score     |
+|     - Qualified? Next action?            |
+|  2. Update Call record in DB             |
+|  3. End session, cleanup audio files     |
++------------------------------------------+
 ```
 
-### 2. Environment
+### Real-Time Dashboard
 
-```bash
-cp .env.example .env
-```
+Throughout every call, `SessionManager` emits events that `server.ts` broadcasts via Socket.IO to the business owner's dashboard:
 
-Fill in your `.env`:
+| Event | Trigger | Dashboard Effect |
+|-------|---------|-----------------|
+| `call:started` | Call begins | Waveform activates, caller number shown |
+| `call:transcript` | Each turn | Transcript bubble slides in (GSAP) |
+| `call:amplitude` | During audio | Waveform bars pulse (~20fps, throttled) |
+| `call:action_items` | After 2+ exchanges | Coaching suggestions appear |
+| `call:ended` | Call finishes | Summary displayed, UI resets |
 
-| Variable | Required | Where to get it |
-|----------|----------|-----------------|
-| `DATABASE_URL` | Yes | [Neon](https://neon.tech) or any PostgreSQL |
-| `DATABASE_URL_UNPOOLED` | Yes | Same DB, direct connection (for migrations) |
-| `ANTHROPIC_API_KEY` | Yes | [console.anthropic.com](https://console.anthropic.com) |
-| `TWILIO_ACCOUNT_SID` | Yes | [console.twilio.com](https://console.twilio.com) |
-| `TWILIO_AUTH_TOKEN` | Yes | Twilio Console → Account Info |
-| `TWILIO_PHONE_NUMBER` | Yes | Your purchased Twilio number |
-| `PORT` | No | Default: 3000 |
+### Key POC Design Decisions
 
-### 3. Database
-
-```bash
-npm run db:generate   # Generate Prisma client
-npm run db:push       # Push schema to database
-```
-
-### 4. Run
-
-```bash
-npm run dev
-# App runs at http://localhost:3000
-```
-
-### 5. Expose to Twilio (local dev only)
-
-Twilio needs to reach your app via a public URL. Use [ngrok](https://ngrok.com):
-
-```bash
-ngrok http 3000
-# Gives you: https://abc123.ngrok-free.dev
-```
-
-Configure your Twilio phone number (Console → Phone Numbers → your number):
-
-| Setting | Value |
-|---------|-------|
-| A call comes in | Webhook: `https://YOUR-NGROK-URL/api/webhooks/twilio` (POST) |
-| Call status changes | `https://YOUR-NGROK-URL/api/webhooks/twilio` (PUT) |
-
-### 6. Test
-
-```bash
-# Zero-cost simulation (no phone needed):
-npx ts-node scripts/simulate-call.ts
-
-# Real call (uses Twilio credit):
-npx ts-node scripts/test-call.ts
-```
+- **Sesame CSM on local GPU** — Human-quality neural TTS with zero per-minute API costs. Runs as a Docker container on an RTX 3080. Voice consistency across chunks is maintained via the `/api/v1/audio/conversation` endpoint, which conditions generation on the previous chunk's audio.
+- **Twilio `<Gather speech>` for STT** — Uses Twilio's built-in speech recognition instead of a streaming WebSocket + external STT provider. Simpler to implement, but adds ~1-2s latency per turn versus streaming alternatives.
+- **Chunked TTS with redirect polling** — Long AI responses are split into sentence-sized chunks (~40 chars each, ~2.5s audio). Each chunk gets its own `<Redirect>` to reset Twilio's 15-second TwiML execution clock. This prevents timeouts when the GPU takes longer than expected.
+- **Greeting cache** — First call to a business generates the greeting via Sesame and caches the `.wav` file on disk. Subsequent calls serve the cached file instantly. Cache key is `md5(voice + text)`, so it auto-invalidates when the greeting or voice changes.
+- **In-memory session state** — `SessionManager` stores active calls in a Map on `globalThis` (survives Next.js hot reloads). Fast for single-process, but doesn't survive server restarts. DB is the source of truth for completed calls.
+- **Single-process architecture** — Next.js + Socket.IO + session state all live in one Node.js process (`server.ts`). Simple to develop but cannot scale horizontally.
 
 ---
 
-## Application Flow — Start to Finish
-
-### Phase 1: Business Onboarding
-
-A business owner visits `/onboarding` and completes a 4-step wizard:
-
-1. **Business Info** — Company name, phone number, description
-2. **Services & FAQ** — What they offer, common questions + answers
-3. **AI Persona** — Tone of voice (Professional/Friendly/Casual/etc.), greeting script, custom instructions
-4. **Lead Criteria** — What info to collect (name, email, budget), disqualifiers
-
-This creates a `Business` + `ContextProfile` in the database. The context profile drives everything the AI agent knows and how it behaves.
-
-### Phase 2: Incoming Call
-
-When someone calls the Twilio number:
-
-1. **Twilio** receives the call and POSTs to your webhook (`/api/webhooks/twilio`)
-2. **Webhook handler** (`src/app/api/webhooks/twilio/route.ts`):
-   - Looks up the `Business` by the called phone number (multi-tenant)
-   - Checks Answering Machine Detection — if voicemail, plays a message and hangs up
-   - Creates a `Call` record in the database (status: IN_PROGRESS)
-   - Creates an in-memory `CallSession` via the `SessionManager`
-   - Returns TwiML with `<Gather speech>` wrapping `<Say>` (the greeting)
-3. **Twilio** plays the greeting to the caller using Amazon Polly TTS
-4. The `<Say>` is nested inside `<Gather>`, so the caller can **barge in** (interrupt the greeting to start talking immediately)
-
-### Phase 3: Conversation Loop
-
-Each time the caller speaks:
-
-1. **Twilio's built-in speech recognition** converts voice to text
-2. **Twilio POSTs** to `/api/webhooks/twilio/gather` with `SpeechResult`
-3. **Gather handler** (`src/app/api/webhooks/twilio/gather/route.ts`):
-   - Retrieves the in-memory session by `CallSid`
-   - Fetches the business's `ContextProfile` from the database
-   - Calls `getAIResponse()` which:
-     - Adds the caller's message to conversation history
-     - Builds a **dynamic system prompt** with company context, services, FAQs, tone, lead criteria, and escalation rules
-     - Sends the full conversation + system prompt to **Claude Opus 4.6**
-     - Claude responds with a concise, voice-appropriate reply (max 300 tokens)
-     - Adds the AI response to conversation history
-   - **Async (fire-and-forget)**: Sends transcript to **Claude Haiku** for action item analysis
-   - Persists both messages (user + assistant) to the `Message` table
-   - Returns TwiML: `<Gather speech><Say>AI response</Say></Gather>` — loops back
-
-This loop continues until the caller hangs up or times out.
-
-### Phase 4: Real-Time Dashboard
-
-Throughout the call, the `SessionManager` emits events that `server.ts` broadcasts via Socket.IO:
-
-| Event | When | Dashboard Effect |
-|-------|------|-----------------|
-| `call:started` | Call begins | Card animates in with caller number |
-| `call:transcript` | Each turn | Message bubble slides up with GSAP |
-| `call:amplitude` | During audio | Waveform bars pulse (throttled to ~20fps) |
-| `call:action_items` | After 2+ exchanges | Coaching cards fly in (color-coded by priority) |
-| `call:ended` | Call finishes | Card fades out |
-
-The dashboard at `/dashboard` subscribes to a Socket.IO room keyed by `business:{businessId}`, so each business owner only sees their own calls.
-
-### Phase 5: Post-Call Analysis
-
-When the call ends:
-
-1. **Twilio** sends a status callback (PUT) with `CallStatus` and `CallDuration`
-2. **Status handler** updates the `Call` record (endedAt, duration, status)
-3. **Fire-and-forget**: `generateCallSummary()` sends the full transcript to Claude Haiku, which returns:
-   - **Summary** — 2-3 sentence recap
-   - **Sentiment** — positive/neutral/negative
-   - **Lead Score** — 0-100
-   - **Lead Qualified** — yes/no based on the business's criteria
-   - **Next Action** — recommended follow-up
-4. All fields are persisted to the `Call` record
-5. The session is purged from memory after 30 seconds
-
----
-
-## Architecture
-
-### Multi-Tenancy
-
-Each `Business` is an isolated tenant:
-
-- **Isolated AI behavior** — `ContextProfile` (tone, FAQs, instructions) is loaded per-call
-- **Isolated call history** — `Call`, `Message`, `ActionItem` records scoped by `businessId`
-- **Isolated dashboard** — Socket.IO rooms keyed by `business:{businessId}`
-- **Isolated users** — `BusinessUser` with roles: OWNER, ADMIN, MEMBER, VIEWER
-
-### AI Orchestration
-
-Two Claude models are used strategically:
-
-| Model | Used For | Why |
-|-------|----------|-----|
-| **Opus 4.6** | Conversational turns | Smart, nuanced, handles complex queries |
-| **Haiku 4.5** | Action items, summaries, voicemail detection | Fast (<500ms), cheap, parallelizable |
-
-The system prompt is rebuilt per-call using `buildSystemPrompt()` in `src/lib/claude/prompt-builder.ts`. It injects the tenant's company description, services, FAQs, tone, lead criteria, escalation rules, and caller context.
-
-### Real-Time Pipeline
+## Project Structure
 
 ```
-Next.js API Routes (stateless HTTP)
-        │
-        ▼
-SessionManager (in-memory singleton, EventEmitter)
-        │
-        ▼
-server.ts (listens to events, broadcasts)
-        │
-        ▼
-Socket.IO (WebSocket to browser)
-        │
-        ▼
-LiveCallMirror React component (GSAP animations)
+ai-support-app/
+├── server.ts                    # Custom HTTP server (Next.js + Socket.IO)
+├── prisma/schema.prisma         # Database schema (6 models)
+│
+├── src/app/
+│   ├── onboarding/page.tsx      # 4-step business setup wizard
+│   ├── dashboard/page.tsx       # Live call monitoring dashboard
+│   └── api/
+│       ├── businesses/          # CRUD for business tenants
+│       │   └── [id]/route.ts    # GET, PATCH, DELETE single business
+│       ├── calls/route.ts       # Paginated call history
+│       ├── audio/[filename]/    # Serve TTS audio files to Twilio
+│       └── webhooks/twilio/
+│           ├── route.ts         # Inbound call + status callback
+│           ├── gather/route.ts  # STT -> Claude AI -> chunk + TTS
+│           └── speak/route.ts   # TTS playback with polling
+│
+├── src/components/
+│   └── LiveCallMirror/          # Real-time call UI
+│       ├── index.tsx            # Socket.IO + phase state machine
+│       ├── Waveform.tsx         # GSAP animated audio bars
+│       └── Transcript.tsx       # Scrolling message bubbles
+│
+├── src/lib/
+│   ├── prisma.ts                # Prisma singleton
+│   ├── session-manager.ts       # In-memory call sessions + EventEmitter
+│   ├── claude/
+│   │   ├── ai-agent.ts          # Claude: conversation, analysis, summaries
+│   │   └── prompt-builder.ts    # Dynamic per-tenant system prompts
+│   ├── tts/
+│   │   ├── sesame-client.ts     # Sesame CSM client + greeting cache
+│   │   └── pending-audio.ts     # In-flight TTS promise cache (globalThis)
+│   └── telephony/
+│       └── twiml.ts             # Shared TwiML + audio URL helpers
+│
+└── src/types/index.ts           # Shared TypeScript interfaces
 ```
 
 ---
 
 ## Database Schema
 
-```
-Business ─────────────────────────────┐
-  │ 1:1                               │ 1:N
-  ▼                                   ▼
-ContextProfile                     Call ────────────────┐
-  (AI persona, FAQs,                │ 1:N              │ 1:N
-   tone, lead criteria)             ▼                  ▼
-                                 Message           ActionItem
-                               (transcript)      (AI coaching)
+Six models, all scoped by `businessId` for multi-tenancy:
 
-Business ─── 1:N ─── BusinessUser (team members)
 ```
+Business ----------------------+
+  | 1:1                        | 1:N
+  v                            v
+ContextProfile              Call ----------------+
+  (AI persona, FAQs,          | 1:N              | 1:N
+   tone, voice, lead          v                  v
+   criteria, escalation)   Message           ActionItem
+                           (transcript)      (AI coaching)
 
-### Key Models
+Business --- 1:N --- BusinessUser (team members with roles)
+```
 
 | Model | Purpose |
 |-------|---------|
-| `Business` | Tenant root — name, phone number, active status |
-| `ContextProfile` | Everything the AI needs — description, services, FAQs, tone, greeting, voice, language, lead criteria, escalation rules |
-| `Call` | Call record — Twilio SID, caller number, status, timestamps, lead score, sentiment, summary |
-| `Message` | Each conversation turn — role (USER/ASSISTANT/SYSTEM), content, timestamp |
-| `ActionItem` | Real-time AI coaching — suggestion, priority (LOW/MEDIUM/HIGH/URGENT), category |
-| `BusinessUser` | Team member — email, name, role (OWNER/ADMIN/MEMBER/VIEWER) |
+| **Business** | Tenant root — name, phone number, active flag |
+| **ContextProfile** | Everything the AI knows — description, services, FAQs, tone, greeting script, voice (Sesame), language, lead criteria, escalation rules, custom instructions |
+| **Call** | Call record — Twilio SID, caller number/name, status, timestamps, duration, post-call summary, lead score (0-100), sentiment, next action |
+| **Message** | Individual transcript turns — role (USER/ASSISTANT/SYSTEM), content, timestamp |
+| **ActionItem** | Live coaching suggestions — suggestion text, priority (LOW-URGENT), category (discount/escalate/follow_up/upsell/etc.) |
+| **BusinessUser** | Team members — email, name, role (OWNER/ADMIN/MEMBER/VIEWER) |
 
 ---
 
-## File Structure
+## Getting Started (POC)
 
+### Prerequisites
+
+- Node.js 18+
+- PostgreSQL database ([Neon](https://neon.tech) free tier works)
+- [Twilio account](https://www.twilio.com/try-twilio) with a phone number
+- [Anthropic API key](https://console.anthropic.com)
+- Sesame CSM running locally (Docker + NVIDIA GPU)
+- [ngrok](https://ngrok.com) for tunneling
+
+### Setup
+
+```bash
+# 1. Install dependencies
+npm install
+
+# 2. Configure environment
+cp .env.example .env
+# Fill in: DATABASE_URL, ANTHROPIC_API_KEY, TWILIO_* credentials
+
+# 3. Push database schema
+npx prisma db push
+
+# 4. Start Sesame CSM (separate terminal)
+docker run --gpus all -p 8999:8999 sesame-csm:latest
+
+# 5. Start ngrok tunnel (separate terminal)
+ngrok http 3000
+
+# 6. Configure Twilio webhook
+# Set your Twilio number's Voice URL to: https://<ngrok-url>/api/webhooks/twilio (POST)
+# Set Status Callback URL to same URL (PUT)
+
+# 7. Start the app
+npm run dev
 ```
-ai-support-app/
-├── server.ts                              # Custom Node server: Socket.IO + event routing
-├── prisma/
-│   └── schema.prisma                      # Database models & enums
-├── src/
-│   ├── app/
-│   │   ├── layout.tsx                     # Root HTML layout (dark mode)
-│   │   ├── page.tsx                       # Landing page
-│   │   ├── onboarding/page.tsx            # 4-step business setup wizard
-│   │   ├── dashboard/page.tsx             # Live call dashboard
-│   │   └── api/
-│   │       ├── webhooks/twilio/
-│   │       │   ├── route.ts              # POST: inbound call, PUT: status callback
-│   │       │   └── gather/route.ts       # POST: speech → Claude AI → response loop
-│   │       ├── businesses/
-│   │       │   ├── route.ts              # POST: create, GET: list
-│   │       │   └── [id]/route.ts         # GET: detail, PATCH: update
-│   │       └── calls/route.ts            # GET: paginated call history
-│   ├── components/
-│   │   └── LiveCallMirror/
-│   │       ├── index.tsx                  # Socket.IO orchestrator + state management
-│   │       ├── Waveform.tsx               # GSAP animated audio bars
-│   │       ├── Transcript.tsx             # GSAP scrolling message bubbles
-│   │       └── ActionItems.tsx            # GSAP animated coaching cards
-│   ├── lib/
-│   │   ├── prisma.ts                      # Singleton PrismaClient
-│   │   ├── session-manager.ts             # In-memory sessions + EventEmitter
-│   │   └── claude/
-│   │       ├── ai-agent.ts               # Claude API: conversation, analysis, summaries
-│   │       └── prompt-builder.ts          # Dynamic system prompt assembly
-│   └── types/index.ts                     # Shared TypeScript interfaces
-├── scripts/
-│   ├── simulate-call.ts                   # Test webhook locally (zero-cost)
-│   └── test-call.ts                       # Trigger real outbound test call
-├── package.json
-├── tsconfig.json                          # TypeScript config (Next.js)
-├── tsconfig.server.json                   # TypeScript config (server.ts)
-├── next.config.js                         # Next.js config (socket.io externals)
-├── tailwind.config.js                     # Tailwind theme (Inter, slate/cyan)
-└── postcss.config.js
-```
+
+### Usage
+
+1. Open `http://localhost:3000` — onboarding wizard appears
+2. Configure your business (name, services, FAQ, AI persona, voice)
+3. Redirected to dashboard — waiting for calls
+4. Call your Twilio number — hear the AI greeting, have a conversation
+5. Watch the live transcript and waveform on the dashboard
+
+---
+
+## Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATABASE_URL` | Yes | — | Neon PostgreSQL connection string (pooled) |
+| `DATABASE_URL_UNPOOLED` | Yes | — | Direct connection for migrations |
+| `ANTHROPIC_API_KEY` | Yes | — | Claude API key |
+| `TWILIO_ACCOUNT_SID` | Yes | — | Twilio account SID |
+| `TWILIO_AUTH_TOKEN` | Yes | — | Twilio auth token |
+| `TWILIO_PHONE_NUMBER` | Yes | — | Your Twilio phone number |
+| `SESAME_URL` | No | `http://localhost:8999` | Sesame CSM API base URL |
+| `CLAUDE_CONVERSATION_MODEL` | No | `claude-sonnet-4-6` | Model for caller conversations |
+| `CLAUDE_FAST_MODEL` | No | `claude-haiku-4-5-20251001` | Model for analysis + summaries |
+| `PORT` | No | `3000` | Server port |
 
 ---
 
@@ -368,123 +258,196 @@ ai-support-app/
 
 | Method | Route | Purpose |
 |--------|-------|---------|
-| POST | `/api/webhooks/twilio` | Twilio inbound call webhook — returns TwiML |
-| PUT | `/api/webhooks/twilio` | Twilio call status callback (completed/failed) |
-| POST | `/api/webhooks/twilio/gather` | Speech recognition result — Claude AI loop |
-| POST | `/api/businesses` | Create a new business tenant |
+| POST | `/api/webhooks/twilio` | Inbound call — greeting + AMD + session creation |
+| PUT | `/api/webhooks/twilio` | Status callback — post-call summary + DB update |
+| POST | `/api/webhooks/twilio/gather` | Speech result → Claude AI → chunk TTS → redirect |
+| POST | `/api/webhooks/twilio/speak` | Await TTS → play chunk → redirect or listen |
+| GET | `/api/audio/[filename]` | Serve generated audio files to Twilio `<Play>` |
+| POST | `/api/businesses` | Create business + context profile |
 | GET | `/api/businesses` | List all businesses |
-| GET | `/api/businesses/[id]` | Get business + context profile |
-| PATCH | `/api/businesses/[id]` | Update business or context profile |
-| GET | `/api/calls?businessId=X` | Paginated call history with message/action counts |
+| GET | `/api/businesses/[id]` | Get business + profile + call count |
+| PATCH | `/api/businesses/[id]` | Update business or profile settings |
+| DELETE | `/api/businesses/[id]` | Delete business (cascades all data) |
+| GET | `/api/calls` | Paginated call history (filter by businessId, status) |
 
 ---
 
-## npm Scripts
+## Scripts
 
 | Script | Command | Purpose |
 |--------|---------|---------|
 | `dev` | `ts-node server.ts` | Start dev server (Next.js + Socket.IO) |
 | `build` | `next build` | Build for production |
 | `start` | `NODE_ENV=production ts-node server.ts` | Start production server |
-| `db:generate` | `prisma generate` | Generate Prisma client from schema |
-| `db:push` | `prisma db push` | Push schema changes to database |
+| `db:push` | `prisma db push` | Push schema to database |
+| `db:generate` | `prisma generate` | Generate Prisma client |
 | `db:studio` | `prisma studio` | Open Prisma Studio (database GUI) |
-| `db:migrate` | `prisma migrate dev` | Run database migrations |
+| `db:migrate` | `prisma migrate dev` | Create new migration |
 
 ---
 
-## Dashboard
+## Costs (POC Testing)
+
+| Service | Type | Cost | Notes |
+|---------|------|------|-------|
+| **Twilio** | Trial → upgraded | Free ($15.50 credit) | Phone number + voice calls + STT. Covers ~150+ min of test calls |
+| **Anthropic API** | Pay-as-you-go | $5 minimum top-up | Sonnet + Haiku. $5 covers thousands of test turns |
+| **Neon** | Free tier | $0 | PostgreSQL (0.5GB, auto-suspend) |
+| **ngrok** | Free tier | $0 | Tunnel to public URL (changes on restart) |
+| **Sesame CSM** | Self-hosted | $0 (requires NVIDIA GPU) | Local Docker container, no API costs |
+
+**A typical 3-minute test call costs ~$0.03-0.05** (Twilio minutes + Claude tokens, TTS is free).
+
+---
+
+## Production Roadmap
+
+The POC validates the core experience: an AI agent that sounds human, holds real conversations, and qualifies leads. Moving to production-ready multi-tenant SaaS requires replacing each POC shortcut with a scalable equivalent.
+
+### Phase 1: Cloud TTS (Remove GPU Dependency)
+
+> **Goal:** Deploy anywhere without requiring a local NVIDIA GPU.
+
+| POC (Current) | Production (Target) | Why |
+|----------------|--------------------|----|
+| Sesame CSM on local RTX 3080 | **ElevenLabs** or **PlayHT** API | Auto-scales, sub-500ms latency, no hardware dependency. Pricing: ~$0.18-0.30 per 1K characters |
+| `tmp/audio/` local file storage | **Cloudflare R2** or **AWS S3** | Audio accessible from any server instance. Presigned URLs for Twilio `<Play>` |
+| Greeting cache on local disk | **R2/S3 + CDN** (Cloudflare) | Cached at the edge, <50ms TTFB worldwide |
+
+**Migration steps:**
+1. Create an ElevenLabs/PlayHT client with the same interface as `sesame-client.ts` (`generateSpeech()` returns a URL instead of a filename)
+2. Upload generated audio to R2/S3 instead of `fs.writeFileSync()` to local disk
+3. Return presigned URLs directly in TwiML `<Play>` tags (eliminates the `/api/audio/` route)
+4. Move greeting cache to R2 with CDN distribution
+5. Remove Docker/GPU dependency from deployment requirements
+
+### Phase 2: Infrastructure (Enable Horizontal Scaling)
+
+> **Goal:** Separate stateless frontend from stateful WebSocket server. Deploy to managed platforms.
+
+| POC (Current) | Production (Target) | Why |
+|----------------|--------------------|----|
+| `server.ts` (single Node.js process) | **Vercel** (Next.js) + **Railway** or **Fly.io** (WebSocket server) | Independent scaling of HTTP and WebSocket workloads |
+| ngrok tunnel | **Custom domain** with DNS | Real SSL, no tunnel dependency, stable URLs |
+| In-memory `SessionManager` (Map) | **Redis** (Upstash serverless) | Sessions survive restarts, shared across instances |
+| `globalThis` singletons | **Redis** keys with TTL | `pendingAudio` and sessions work across multiple processes |
+| Neon free tier | **Neon Pro** or **Supabase** with connection pooling | Autoscaling compute, branching for staging, PgBouncer |
+| Socket.IO on single server | **Socket.IO + Redis Adapter** | Multiple instances share rooms via Redis pub/sub |
+
+**Migration steps:**
+1. Deploy Next.js frontend + REST API to Vercel
+2. Extract WebSocket server (Socket.IO + real-time events) to Railway or Fly.io
+3. Replace `SessionManager` in-memory Map with Redis hash sets (`HSET session:{callSid} ...`)
+4. Replace `pendingAudio` Map with Redis keys + 2-minute TTL
+5. Add `@socket.io/redis-adapter` for multi-instance Socket.IO
+6. Point Twilio webhooks and custom domain DNS to production URLs
+
+### Phase 3: Streaming STT (Reduce Latency)
+
+> **Goal:** Replace turn-based `<Gather>` with real-time streaming for natural, low-latency conversation.
+
+| POC (Current) | Production (Target) | Why |
+|----------------|--------------------|----|
+| Twilio `<Gather speech>` (~1-2s latency) | **Twilio Media Streams** + **Deepgram** or **AssemblyAI** | Real-time streaming STT with ~200ms latency. Interim results enable faster AI responses |
+| Turn-based conversation | **Full-duplex** with barge-in | Caller can interrupt the AI mid-sentence — feels like talking to a person |
+| Separate `/gather` + `/speak` routes | **Single WebSocket connection** | Audio streams bidirectionally. No HTTP round-trips per turn |
+
+**Migration steps:**
+1. Replace `<Gather>` with `<Connect><Stream>` in the Twilio inbound webhook
+2. Add WebSocket handler for Twilio Media Streams in the WebSocket server
+3. Pipe raw audio (mulaw 8kHz) to Deepgram/AssemblyAI streaming API
+4. On final transcript → Claude generates response → stream TTS audio back via RTP
+5. Remove `/gather` and `/speak` routes (entire conversation happens over the WebSocket)
+6. Implement barge-in detection (stop TTS playback when caller starts speaking)
+
+### Phase 4: Multi-Tenant Features (Self-Service SaaS)
+
+> **Goal:** Businesses sign up, configure, and pay — without manual intervention.
+
+| POC (Current) | Production (Target) | Why |
+|----------------|--------------------|----|
+| localStorage `businessId` | **Clerk** or **NextAuth** with organizations | Real user accounts, team invites, SSO, MFA |
+| Single dashboard | **Per-business dashboards** with org switcher | Each business sees only their calls, analytics, settings |
+| Manual Twilio number config | **Twilio Subaccounts** or **Number Provisioning API** | Self-service: businesses buy/port numbers through the app |
+| No billing | **Stripe** usage-based billing | Meter by minutes, calls, or AI tokens. Per-tenant invoicing |
+| Basic Call + Message models | **Analytics pipeline** | Call volume trends, avg handle time, lead conversion, sentiment over time |
+
+**Migration steps:**
+1. Integrate Clerk (or NextAuth) with organization support and RBAC
+2. Add `organizationId` to Business model (or use Clerk organization ID)
+3. Build settings pages: team management, billing, number management
+4. Integrate Stripe with usage metering (Twilio status callback → Stripe meter event)
+5. Build analytics dashboards (aggregate queries, materialized views, or a tool like Metabase)
+6. Add Twilio subaccount provisioning per business for number isolation
+
+### Phase 5: Reliability and Observability
+
+> **Goal:** Monitor, alert, and recover from failures automatically.
+
+| POC (Current) | Production (Target) | Why |
+|----------------|--------------------|----|
+| `console.log` / `console.error` | **Structured logging** (Axiom, Datadog, or Betterstack) | Searchable, filterable, correlated by `callSid` |
+| No monitoring | **OpenTelemetry** traces + **Sentry** errors | Trace a call from webhook → AI → TTS → dashboard. Alert on failures |
+| No rate limiting | **Upstash Ratelimit** or **Cloudflare WAF** | Protect API routes from abuse. Per-business rate limits |
+| No job queue | **Inngest** or **BullMQ** for background jobs | Retry failed summaries, process webhooks idempotently, schedule cleanups |
+| 5-minute audio cleanup (in-process) | **Object lifecycle policies** (S3/R2) | Cloud storage auto-deletes old audio. No cron or interval needed |
+| No webhook validation | **Twilio request signature verification** | Reject spoofed webhook requests. Use `twilio.validateRequest()` |
+
+---
+
+### Production Architecture (Target)
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  VoiceIQ Dashboard               Acme Consulting Group       │
-├──────────────────────────────────────────────────────────────┤
-│                                                              │
-│  ┌────────────────────────────────────────────────────────┐  │
-│  │  LIVE CALL          +63 932 236 8116         02:47     │  │
-│  ├────────────────────────────────────────────────────────┤  │
-│  │  ▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌  │  │
-│  ├───────────────────────┬────────────────────────────────┤  │
-│  │  Live Transcript      │  AI Coaching Suggestions       │  │
-│  │                       │                                │  │
-│  │  Caller: Hi, I'm     │  HIGH  Lead Signal             │  │
-│  │  interested in your   │  Customer asked about pricing  │  │
-│  │  AI consulting...     │  — mention free consultation   │  │
-│  │                       │                                │  │
-│  │  AI: Welcome! I'd    │  MEDIUM  Objection             │  │
-│  │  love to tell you     │  Budget concern detected —     │  │
-│  │  about our services.  │  highlight ROI metrics         │  │
-│  │  What specific area   │                                │  │
-│  │  interests you?       │                                │  │
-│  └───────────────────────┴────────────────────────────────┘  │
-│                                                              │
-│  ┌─ Recent Calls ─────────────────────────────────────────┐  │
-│  │  +63 932 XXX  │  3:24  │  Score: 85  │  Qualified     │  │
-│  │  +1 415 XXX   │  1:02  │  Score: 30  │  Not Qualified │  │
-│  │  +44 20 XXX   │  5:11  │  Score: 92  │  Qualified     │  │
-│  └────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────┘
+                    +---------------------+
+                    |   Cloudflare        |
+                    |   CDN + WAF         |
+                    +----------+----------+
+                               |
+              +----------------+----------------+
+              |                                 |
+     +--------v--------+             +----------v-----------+
+     |    Vercel        |             |   Railway / Fly.io   |
+     |    (Next.js)     |             |   (WebSocket server) |
+     |                  |             |                      |
+     |  - Dashboard UI  |             |  - Socket.IO         |
+     |  - REST API      |             |  - Twilio Media      |
+     |  - Onboarding    |             |    Streams (STT)     |
+     |  - Auth (Clerk)  |             |  - TTS streaming     |
+     +--------+---------+             +----------+-----------+
+              |                                  |
+              +----------------+-----------------+
+                               |
+              +----------------+----------------+
+              |                                 |
+     +--------v--------+             +----------v-----------+
+     |  Neon / Supabase |             |   Upstash Redis      |
+     |  (PostgreSQL)    |             |   - Sessions         |
+     |                  |             |   - Pub/Sub (Socket)  |
+     +--------+---------+             |   - Rate limiting    |
+              |                       +----------------------+
+     +--------v--------+
+     |  Cloudflare R2   |             +----------------------+
+     |  (Audio files +  |             |   External APIs      |
+     |   CDN)           |             |                      |
+     +------------------+             |  - Anthropic Claude  |
+                                      |  - ElevenLabs TTS    |
+                                      |  - Deepgram STT      |
+                                      |  - Twilio Voice      |
+                                      |  - Stripe Billing    |
+                                      +----------------------+
 ```
 
----
+### Migration Priority
 
-## Costs
+Phases can be tackled independently, but this order maximizes impact per effort:
 
-### Per-Call Costs (Production)
-
-| Service | Cost | Notes |
-|---------|------|-------|
-| Twilio phone number | ~$1-3/month | Varies by country |
-| Twilio voice (inbound) | ~$0.0085-0.01/min | Includes built-in STT + TTS |
-| Claude Opus (conversation) | ~$0.015-0.075/turn | Based on context length |
-| Claude Haiku (analysis) | ~$0.001-0.003/turn | Very cheap |
-| Neon PostgreSQL | Free tier | 0.5GB storage, auto-suspend |
-
-**A typical 3-minute call costs ~$0.07-0.15 total.**
-
-### Credits, Subscriptions & Payments for Testing
-
-Everything you need to test this application end-to-end:
-
-| Service | Type | Cost | What you get | Sign up |
-|---------|------|------|-------------|---------|
-| **Twilio** | Account (upgraded from trial) | Free (trial gives $15.50 credit) | Phone number, voice calls, STT/TTS — credit covers ~150+ min of test calls | [twilio.com](https://www.twilio.com/try-twilio) |
-| **Anthropic API** | Pay-as-you-go credits | $5 minimum top-up | Claude Opus + Haiku API access — $5 covers thousands of test turns | [console.anthropic.com](https://console.anthropic.com/settings/billing) |
-| **Neon** | Free tier | $0 | PostgreSQL database (0.5GB, auto-suspend after inactivity) | [neon.tech](https://neon.tech) |
-| **ngrok** | Free tier | $0 | Tunnel localhost to public URL (URL changes on restart) | [ngrok.com](https://ngrok.com) |
-| **Viber Out** | Subscription | ~$5.99/month or per-minute credits | Cheap international calls from your phone to test dialing the Twilio number | [viber.com](https://account.viber.com/en/viber-out) |
-| **Claude Code** | Max subscription | $100-200/month | The CLI tool used to build this app (NOT required for the app to run) | [claude.ai](https://claude.ai) |
-
-**Important distinctions:**
-- **Claude Code Max** (your CLI subscription) and **Anthropic API credits** (what the app uses) are completely separate. You need both — Claude Code to develop, API credits for the app to call Claude at runtime.
-- **Viber Out** is just one way to test calling. Any phone that can dial international numbers works. Viber Out is convenient if your carrier doesn't support international calls or charges high rates.
-- **Twilio trial** works for testing but blocks inbound calls from unverified numbers. Upgrading (free, credit carries over) removes this restriction so anyone can call.
-
-**Total cost to get started testing: ~$5** (Anthropic API top-up; everything else is free tier or included credits)
-
----
-
-## Production Deployment
-
-For production, replace ngrok with a real server:
-
-| Step | Action |
-|------|--------|
-| 1 | Deploy to Railway, Render, or AWS (needs WebSocket support — not Vercel) |
-| 2 | Set Twilio webhook to your production URL |
-| 3 | Add authentication (NextAuth.js / Clerk) |
-| 4 | Add Twilio webhook signature validation |
-| 5 | Add rate limiting on webhook endpoints |
-| 6 | Configure proper SSL and domain |
-
-### Future Enhancements
-
-- **ConversationRelay** — Upgrade from Gather/Say to Twilio's real-time streaming for natural, overlapping conversation
-- **Voice cloning** — Custom AI voices per business (ElevenLabs / Sesame CSM)
-- **WhatsApp integration** — Same AI agent over WhatsApp (Twilio Messaging)
-- **CRM integrations** — Push leads to Salesforce, HubSpot, etc.
-- **Call recording** — Store and replay with Twilio Recording
-- **Multi-language** — Per-business language config (already has `language` field in schema)
+| Priority | Phase | What It Unlocks | Effort |
+|----------|-------|----------------|--------|
+| **1** | Cloud TTS | Deploy anywhere (no GPU). Unblocks phase 2 | Low |
+| **2** | Infrastructure | Real deployment, horizontal scaling, uptime | Medium |
+| **3** | Multi-Tenant Features | Self-service signups, billing, team access | Medium |
+| **4** | Streaming STT | Natural conversation feel, barge-in, <500ms latency | High |
+| **5** | Reliability | Production monitoring, error recovery, security | Low-Medium |
 
 ---
 
